@@ -1,0 +1,212 @@
+using Pkg
+Pkg.activate(joinpath(@__DIR__))
+Pkg.instantiate()
+
+# ## Setup
+using Dojo
+using Random
+using LinearAlgebra 
+using JLD2
+using StaticArrays
+using IterativeLQR
+import Dojo: cost
+#include(joinpath(@__DIR__, "algorithms/ags.jl")) # augmented random search
+include(joinpath(@__DIR__, "../environments/patrick/methods/initialize.jl"))
+include(joinpath(@__DIR__, "../environments/patrick/methods/env.jl"))
+
+
+# ## Patrick
+# set attributes of this robot
+num_limbs = 5 # wouldn't recommend doing less than 3 for now. lemme know if you want less
+num_links_per_limb = 2
+num_actuated_per_limb = 2
+mass_per_limb = 0.036
+mass_body = 0.15
+radius_b = 0.045
+height = 0.032
+limb_length = 0.13
+gravity=[0.0, 0.0, -9.81]
+timestep=0.05
+
+# this call produces the simulation environment (mechanism, actuation template, animations, dynamics)
+env = patrick(
+    representation=:minimal, 
+    gravity=gravity, 
+    timestep=timestep, 
+    damper=0.10, 
+    spring=0.01*ones(num_links_per_limb*num_limbs), 
+    friction_coefficient=0.5,
+    contact_feet=true, 
+    contact_body=true,
+    num_limbs=num_limbs,
+    num_links_per_limb=num_links_per_limb,
+    num_actuated_per_limb=num_actuated_per_limb,
+    mass_per_limb=mass_per_limb,
+    mass_body=mass_body,
+    radius_b = radius_b,
+    height=height,
+    limb_length=limb_length,
+    limits=false,
+    joint_limits=[-50*ones(num_links_per_limb*5*2)* π / 180.0,
+                   50*ones(num_links_per_limb*5*2)* π / 180.0]);
+
+obs = reset(env)
+env.state .= get_minimal_state(env.mechanism)
+render(env)
+
+# initialize state and open the visualizer
+body_position=[0.0; 0.0; height/2 + height/100]
+# ## Open visualizer
+initialize_patrick!(env.mechanism,body_position=body_position,body_orientation=[0.0; 0.0; 0.0 * π])
+open(env.vis)
+
+
+# set our current state and initialize y to store our trajectory
+env.state .= get_minimal_state(env.mechanism)
+y = [copy(env.state)] # state trajectory
+T = 201
+
+# initialize our inputs
+ū = [zeros(env.num_inputs) for i in 1:T-1]
+
+# perform a rollout. these inputs are just me playing around by hand
+for t = 1:25
+    ū = [zeros(4); -1.3/1000; -1/1000; zeros(env.num_inputs-10); -1.3/1000; 1/1000; zeros(2)]
+    step(env, env.state, ū)
+    push!(y, copy(env.state)) 
+end
+for t = 26:50
+    ū = 1/5*[zeros(4); 6/1000; 2/1000; zeros(env.num_inputs-10); 6/1000; -2/1000; zeros(2)]
+    step(env, env.state, ū)
+    push!(y, copy(env.state)) 
+end
+for t = 51:75
+    ū = [zeros(4); -1.3/1000; -1/1000; zeros(env.num_inputs-10); -1.3/1000; 1/1000; zeros(2)]
+    step(env, env.state, ū)
+    push!(y, copy(env.state)) 
+end
+for t = 76:100
+    ū = 0/5*[zeros(4); 5.5/1000; 1.5/1000; zeros(env.num_inputs-10); 5.5/1000; -1.5/1000; zeros(2)]
+    step(env, env.state, ū)
+    push!(y, copy(env.state)) 
+end
+for t = 101:125
+    ū = 0/5*[zeros(4); 5.5/1000; 1.5/1000; zeros(env.num_inputs-10); 5.5/1000; -1.5/1000; zeros(2)]
+    step(env, env.state, ū)
+    push!(y, copy(env.state)) 
+end
+
+# visualize our rollout
+visualize(env, y[1:end]);
+
+
+### BELOW IS AN EXAMPLE OF SIMPLE RL. THE CODE WAS FOR A DIFFERENT ROBOT AND IS NOT YET ADAPTED FOR PATRICK
+# I left it here as a reference because it makes decent use of the API
+
+
+# initialize_pleuro!(env.mechanism)
+# y = [copy(env.state)]
+# for i=1:3
+#     for t = 1:200
+#         step(env, env.state, u_sol[t])
+#         push!(y, copy(env.state)) 
+#     end
+# end
+# visualize(env, y)
+
+# @save joinpath(@__DIR__, "results/pleuro_ilqr.jld2") x_sol u_sol
+
+# # ## Set up policy
+# hp = HyperParameters(
+#         main_loop_size=100, 
+#         horizon=150, 
+#         n_directions=6, 
+#         b=6, 
+#         step_size=0.02)
+# input_size = length(env.state)
+# output_size = length(env.input_previous)
+# normalizer = Normalizer(input_size)
+
+# # ## Training
+# train_times = Float64[]
+# rewards = Float64[]
+# policies = Matrix{Float64}[]
+# N = 5
+# for i = 1:N
+#     ## Reset environment
+#     env = pleuro(
+#         representation=:minimal, 
+#         gravity=[0.0, 0.0, -3.81], 
+#         timestep=0.05, 
+#         damper=50.0, 
+#         spring=5.0, 
+#         friction_coefficient=0.9,
+#         contact_feet=true, 
+#         contact_body=true,
+#         limits=false);
+#     obs = reset(env)
+
+#     ## Random policy
+#     Random.seed!(i)
+#     hp = HyperParameters(
+#         main_loop_size=100, 
+#         horizon=150, 
+#         n_directions=6, 
+#         b=6, 
+#         step_size=0.02)
+#     input_size = length(env.state)
+#     output_size = length(env.input_previous)
+#     normalizer = Normalizer(input_size)
+#     policy = Policy(input_size, output_size, hp)
+
+#     ## Train policy
+#     train_time = @elapsed train(env, policy, normalizer, hp)
+
+#     ## Evaluate policy
+#     reward = rollout_policy(policy.θ, env, normalizer, hp)
+
+#     ## Cache
+#     push!(train_times, train_time)
+#     push!(rewards, reward)
+#     push!(policies, policy.θ)
+# end
+
+# @save joinpath(@__DIR__, "results/pleuro_rl_2.jld2") train_times rewards policies
+# #@load joinpath(@__DIR__, "results/pleuro_rl.jld2") train_times rewards policies
+
+# # ## Training statistics
+# N_best = 3
+# max_idx = sortperm(rewards, 
+#     lt=Base.isgreater)
+# train_time_best = (train_times[max_idx])[1:N_best]
+# rewards_best = (rewards[max_idx])[1:N_best]
+# policies_best = (policies[max_idx])[1:N_best]
+
+# @show rewards
+# @show mean(train_time_best)
+# @show std(train_time_best)
+# @show mean(rewards)
+# @show std(rewards)
+
+# # ## Save/Load policy
+# ## θ = policy.θ
+# ## @save joinpath(@__DIR__, "ant_policy.jld2") θ
+# ## @load joinpath(@__DIR__, "ant_policy.jld2") θ
+
+# # ## Recover policy
+# hp = HyperParameters(
+#         main_loop_size=30, 
+#         horizon=80, 
+#         n_directions=6, 
+#         b=6, 
+#         step_size=0.02)
+# input_size = length(env.state)
+# output_size = length(env.input_previous)
+# normalizer = Normalizer(input_size)
+# θ = policies_best[1] 
+
+# # ## Visualize policy
+# ## traj = display_random_policy(env, hp)
+# traj = display_policy(env, Policy(hp, θ), normalizer, hp)
+# visualize(env, traj)
+# open(env.vis)
